@@ -283,8 +283,8 @@ class DsgnWrksInstagram extends DsgnWrksInstagram_Debug {
 
 		$notices = $this->import( $_REQUEST['instagram_user'] );
 
-		if ( ! $notices ) {
-			wp_send_json_error( '<div id="message" class="updated"><p>'. __( 'No new Instagram shots to import', 'dsgnwrks' ) .'</p></div>' );
+		if ( $this->should_stop ) {
+			wp_send_json_error( '<div id="message" class="updated"><p>'. __( 'Scanning has been finished. No new posts left.', 'dsgnwrks' ) .'</p></div>' );
 		}
 
 		$next_url = false;
@@ -296,6 +296,14 @@ class DsgnWrksInstagram extends DsgnWrksInstagram_Debug {
 				continue;
 			}
 			$messages .= $notice['notice'];
+		}
+
+		if ( ! $notices && ! $this->should_stop ) {
+			wp_send_json_success( array(
+				'messages' => array('<div id="message" class="updated"><p>'. __( 'Scanning is pending', 'dsgnwrks' ) .'</p></div>'),
+				'next_url' => $next_url,
+				'userid'   => $_REQUEST['instagram_user'],
+			) );
 		}
 
 		// send back the messages
@@ -464,6 +472,14 @@ class DsgnWrksInstagram extends DsgnWrksInstagram_Debug {
 		if ( ! ( isset( $user_opts['id'] ) && isset( $user_opts['access_token'] ) ) ) {
 			return;
 		}
+
+		$this->should_stop = false;
+		if ( $this->settings->user_option( 'date-filter' ) && $this->settings->user_option( 'date-filter' ) < get_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-latestpicturets' ) ) {
+			delete_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-latestpicturets' );
+			delete_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-newestpicturets' );
+		}
+		$this->latest_picture_timestamp = get_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-latestpicturets' );
+		$this->newest_picture_timestamp = get_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-newestpicturets' );
 
 		// Get our import report
 		$messages = $this->do_import( $this->doing_cron );
@@ -649,13 +665,6 @@ class DsgnWrksInstagram extends DsgnWrksInstagram_Debug {
 		remove_filter( 'wp_editor_set_quality', array( $this, 'max_quality' ) );
 		remove_filter( 'jpeg_quality', array( $this, 'max_quality' ) );
 
-		// return an array of messages and our "next" url
-		if ( empty( $messages ) && empty( $prevmessages ) )
-			return array(
-				'message'  => array( $this->message_wrap( __( 'No new Instagram shots to import', 'dsgnwrks' ) ) ),
-				'next_url' => $next_url,
-			);
-
 		return array(
 			'message'  => $messages,
 			'next_url' => $next_url,
@@ -683,10 +692,22 @@ class DsgnWrksInstagram extends DsgnWrksInstagram_Debug {
 			if ( ! in_array( $this->pic->type, $this->settings->user_option( 'types', array() ) ) )
 				continue;
 
+			$created_at = $this->pic->created_time;
+			if ($this->newest_picture_timestamp < $created_at) {
+				set_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-newestpicturets', $created_at, 0 );
+			}
+			if ($this->latest_picture_timestamp > $created_at) {
+				$this->should_stop = true;
+				set_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-latestpicturets', $this->newest_picture_timestamp, 0 );
+				break;
+			}
+
 			// if user has a date filter set, check it
 			if ( $this->settings->user_option( 'date-filter' ) && $this->settings->user_option( 'date-filter' ) > $this->pic->created_time ) {
+				set_transient( sanitize_title( urldecode( $this->settings->userid ) ) .'-instaimport-latestpicturets', $this->newest_picture_timestamp, 0 );
 				// and stop if we've passed the date filter time
 				$messages['nexturl'] = 'halt';
+				$this->should_stop = true;
 				break;
 			}
 
